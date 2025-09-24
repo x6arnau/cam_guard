@@ -4,9 +4,9 @@ import time
 from onvif import ONVIFCamera
 
 CAM_HOST = '192.168.1.149'
-CAM_PORT = 80
+CAM_PORT = 2020
 CAM_USER = 'arnaunl3'
-CAM_PASS = 'ar1732nu'
+CAM_PASS = 'rEURO841.'
 
 
 def main():
