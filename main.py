@@ -1,16 +1,48 @@
-# This is a sample Python script.
+# -*- coding: utf-8 -*-
+import time
 
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+from onvif import ONVIFCamera
+
+CAM_HOST = '192.168.1.149'
+CAM_PORT = 80
+CAM_USER = 'arnaunl3'
+CAM_PASS = 'ar1732nu'
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
+def main():
+    """
+    Main function to initialize the ONVIF camera.
+    :return:
+    """
+    try:
+        mycam = ONVIFCamera(CAM_HOST, CAM_PORT, CAM_USER, CAM_PASS)
+        pullpoint = mycam.create_pullpoint_service()
+
+        while True:
+            req = pullpoint.create_type('PullMessages')
+            req.Timeout = 'PT5S'
+            req.MessageLimit = 100
+
+            messages = pullpoint.PullMessages(req)
+
+            if hasattr(messages, 'NotificationMessage'):
+                for msg in messages.NotificationMessage:
+                    event_data = getattr(getattr(msg, 'Message', None), 'Message', None)
+
+                    if event_data:
+                        try:
+                            for item in event_data.Data.SimpleItem:
+                                if item.Name == 'IsPerson' and item.Value is True:
+                                    print("Person detected!")
+                                    # TODO: Rest of the logic
+                        except (AttributeError, TypeError):
+                            pass
+
+            time.sleep(1)
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    main()

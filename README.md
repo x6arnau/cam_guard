@@ -2,7 +2,8 @@
 
 ## Description
 
-Automated security system that integrates a Tapo C520WS camera with a UR robot. When the camera detects a person, the system automatically pauses the UR robot if it's running.
+Automated security system that integrates a Tapo C520WS camera with a UR robot. When the camera detects a person, the
+system automatically pauses the UR robot if it's running.
 
 ## Functionality
 
