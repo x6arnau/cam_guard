@@ -1,47 +1,88 @@
 # -*- coding: utf-8 -*-
+import os
+import signal
+import sys
 import time
+
+from dotenv import load_dotenv
+from onvif import ONVIFCamera
 from requests import Session
 from requests.auth import HTTPDigestAuth
 from zeep.transports import Transport
-from onvif import ONVIFCamera
-from lxml import etree
 
-CAM_HOST = '192.168.1.149'
-CAM_PORT = 2020
-CAM_USER = 'arnaunl3'
-CAM_PASS = 'rEURO841.'
+load_dotenv()
+
+CAM_HOST = os.getenv('CAM_HOST')
+CAM_PORT = int(os.getenv('CAM_PORT'))
+CAM_USER = os.getenv('CAM_USER')
+CAM_PASS = os.getenv('CAM_PASS')
 
 PP_NS_KEY = 'http://www.onvif.org/ver10/events/wsdl/PullPointSubscription'
+
+PULL_TIMEOUT = os.getenv('PULL_TIMEOUT')
+PULL_MESSAGE_LIMIT = int(os.getenv('PULL_MESSAGE_LIMIT'))
+SLEEP_SEC = float(os.getenv('SLEEP_SEC'))
+SCAN_PORTS = range(int(os.getenv('SCAN_PORTS_START')), int(os.getenv('SCAN_PORTS_END')))
+
+
+def _graceful_exit(signum, frame):
+    print("[STOP]")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, _graceful_exit)
+signal.signal(signal.SIGTERM, _graceful_exit)
 
 
 def make_cam():
     sess = Session()
     sess.auth = HTTPDigestAuth(CAM_USER, CAM_PASS)
-    transport = Transport(session=sess, timeout=10)
+    transport = Transport(session=sess, timeout=15)
     return ONVIFCamera(
         CAM_HOST, CAM_PORT, CAM_USER, CAM_PASS,
         transport=transport, adjust_time=True, encrypt=True
     )
 
 
-def create_subscription(events):
+def try_create_subscription(events):
     variants = [
         None,
+        {'InitialTerminationTime': 'PT60S'},
         {'InitialTerminationTime': 'PT10M'},
-        {'Filter': None, 'InitialTerminationTime': 'PT10M', 'SubscriptionPolicy': None},
+        {
+            'Filter': {
+                'TopicExpression': {
+                    '_value_1': 'tns1:RuleEngine//.',
+                    'Dialect': 'http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet'
+                }
+            },
+            'InitialTerminationTime': 'PT10M'
+        },
+        {'Filter': None, 'SubscriptionPolicy': None, 'InitialTerminationTime': 'PT10M'},
     ]
     last_exc = None
     for req in variants:
         try:
-            return events.CreatePullPointSubscription(req) if req else events.CreatePullPointSubscription()
+            sub = events.CreatePullPointSubscription(req) if req else events.CreatePullPointSubscription()
+            return sub.SubscriptionReference.Address._value_1
         except Exception as e:
             last_exc = e
-    raise last_exc
+            time.sleep(0.2)
+    if last_exc:
+        raise last_exc
 
 
-def iter_simple_items_from_xml(message_el):
-    for si in message_el.xpath('.//*[local-name()="SimpleItem"]'):
-        yield si.get('Name'), si.get('Value')
+def try_probe_existing_pullpoint(cam):
+    for p in SCAN_PORTS:
+        url = f"http://{CAM_HOST}:{p}/event-{p}_{p}"
+        try:
+            cam.xaddrs[PP_NS_KEY] = url
+            pp = cam.create_pullpoint_service()
+            pp.PullMessages({'Timeout': 'PT1S', 'MessageLimit': 1})
+            return url
+        except Exception:
+            continue
+    return None
 
 
 def loop_pull(pp):
@@ -52,40 +93,52 @@ def loop_pull(pp):
 
     last_people = False
     while True:
-        res = pp.PullMessages({'Timeout': 'PT5S', 'MessageLimit': 50})
+        try:
+            res = pp.PullMessages({'Timeout': PULL_TIMEOUT, 'MessageLimit': PULL_MESSAGE_LIMIT})
+        except KeyboardInterrupt:
+            print("[STOP]")
+            return
         for notif in getattr(res, 'NotificationMessage', []) or []:
             msg = getattr(notif, 'Message', None)
             message_el = getattr(msg, '_value_1', None) if msg else None
             if message_el is None:
                 continue
 
-            for name, value in iter_simple_items_from_xml(message_el):
-                if name == 'IsPeople':
-                    v = isinstance(value, str) and value.strip().lower() in ('true', '1', 'yes', 'on')
-                    if v and not last_people:
-                        print('[PEOPLE] True')
-                    last_people = v
+            for si in message_el.xpath('.//*[local-name()="SimpleItem"][@Name="IsPeople"]'):
+                val = (si.get('Value') or '').strip().lower()
+                v_true = val in ('true', '1', 'yes', 'on')
+                if v_true and not last_people:
+                    print('[PEOPLE] True')
+                last_people = v_true
 
-        time.sleep(0.05)
+        time.sleep(SLEEP_SEC)
 
 
 def main():
     cam = make_cam()
     events = cam.create_events_service()
-    sub = create_subscription(events)
-    pullpoint_url = sub.SubscriptionReference.Address._value_1
 
-    cam.xaddrs[PP_NS_KEY] = pullpoint_url
+    pullpoint_url = cam.xaddrs.get(PP_NS_KEY)
+
+    if not pullpoint_url:
+        try:
+            pullpoint_url = try_create_subscription(events)
+        except Exception:
+            pullpoint_url = try_probe_existing_pullpoint(cam)
+            if not pullpoint_url:
+                raise
+
+        cam.xaddrs[PP_NS_KEY] = pullpoint_url
+
     pp = cam.create_pullpoint_service()
-
-    try:
-        addr = pp.ws_client._binding_options.get('address')
-    except Exception:
-        addr = pullpoint_url
+    addr = getattr(pp.ws_client, '_binding_options', {}).get('address', pullpoint_url)
     print(f"[READY] PullPoint: {addr}")
 
     loop_pull(pp)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("[STOP]")
