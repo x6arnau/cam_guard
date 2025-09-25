@@ -3,7 +3,9 @@ import os
 import signal
 import sys
 import time
+from typing import Optional
 
+import logging
 from dotenv import load_dotenv
 from onvif import ONVIFCamera
 from requests import Session
@@ -12,6 +14,14 @@ from rtde_control import RTDEControlInterface as RTDEControl
 from zeep.transports import Transport
 
 load_dotenv()
+
+logger = logging.getLogger("cam_guard")
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
 
 CAM_HOST = os.getenv('CAM_HOST')
 CAM_PORT = int(os.getenv('CAM_PORT'))
@@ -27,7 +37,7 @@ SCAN_PORTS = range(int(os.getenv('SCAN_PORTS_START')), int(os.getenv('SCAN_PORTS
 
 UR_HOST = os.getenv('UR_HOST')
 
-rtde_c = None
+rtde_c: Optional[RTDEControl] = None
 _rtde_last_attempt_ts = 0.0
 _rtde_backoff_s = 30.0
 _rtde_attempts = 0
@@ -35,11 +45,12 @@ _rtde_attempts = 0
 
 def _graceful_exit(signum, frame):
     try:
-        if rtde_c is not None:
-            rtde_c.disconnect()
+        c = rtde_c
+        if c is not None:
+            c.disconnect()
     except Exception:
         pass
-    print("[STOP]")
+    logger.info("[STOP]")
     sys.exit(0)
 
 
@@ -61,13 +72,13 @@ def connect_camera_with_backoff():
     attempt = 1
     while True:
         try:
-            print(f"[CAM] Connecting to {CAM_HOST}:{CAM_PORT} (attempt #{attempt})...")
+            logger.info(f"[CAM] Connecting to {CAM_HOST}:{CAM_PORT} (attempt #{attempt})...")
             cam = make_cam()
-            print("[CAM] Connected.")
+            logger.info("[CAM] Connected.")
             return cam
         except Exception as e:
-            print(f"[CAM] Connection error: {e}")
-            print("[CAM] Retrying in 30s...")
+            logger.error(f"[CAM] Connection error: {e}")
+            logger.info("[CAM] Retrying in 30s...")
             attempt += 1
             time.sleep(30.0)
 
@@ -123,58 +134,62 @@ def ensure_rtde_connected():
     try:
         if rtde_c is None:
             _rtde_attempts += 1
-            print(f"[RTDE] Connecting to {UR_HOST} (attempt #{_rtde_attempts})...")
+            logger.info(f"[RTDE] Connecting to {UR_HOST} (attempt #{_rtde_attempts})...")
             rtde_c = RTDEControl(UR_HOST)
-            print("[RTDE] Connected.")
+            logger.info("[RTDE] Connected.")
             _rtde_attempts = 0
             return
 
-        if rtde_c.isConnected():
+        c = rtde_c
+        if c is not None and c.isConnected():
             _rtde_attempts = 0
             return
 
         _rtde_attempts += 1
-        print(f"[RTDE] Retrying connection (attempt #{_rtde_attempts})...")
-        if rtde_c.reconnect():
-            print("[RTDE] Reconnected.")
+        logger.info(f"[RTDE] Retrying connection (attempt #{_rtde_attempts})...")
+        if c is not None and c.reconnect():
+            logger.info("[RTDE] Reconnected.")
             _rtde_attempts = 0
             return
 
         try:
-            rtde_c.disconnect()
+            if c is not None:
+                c.disconnect()
         except Exception:
             pass
-        print(f"[RTDE] Creating new session with {UR_HOST} (attempt #{_rtde_attempts})...")
+        logger.info(f"[RTDE] Creating new session with {UR_HOST} (attempt #{_rtde_attempts})...")
         rtde_c = RTDEControl(UR_HOST)
-        print("[RTDE] Connected.")
+        logger.info("[RTDE] Connected.")
         _rtde_attempts = 0
     except Exception as e:
-        print(f"[RTDE] Connection error: {e}")
-        print("[RTDE] Will retry in 30s...")
+        logger.error(f"[RTDE] Connection error: {e}")
+        logger.info("[RTDE] Will retry in 30s...")
 
 
 def is_program_running():
     try:
         ensure_rtde_connected()
-        if rtde_c is None:
+        c = rtde_c
+        if c is None:
             return None
-        status = rtde_c.getRobotStatus()
+        status = c.getRobotStatus()
         return bool(status & 0x2)
         # return ((status >> 1) & 1) == 1
     except Exception as e:
-        print(f"[RTDE] getRobotStatus error: {e}")
+        logger.error(f"[RTDE] getRobotStatus error: {e}")
         return None
 
 
 def stop_robot():
     try:
         ensure_rtde_connected()
-        if rtde_c is None:
+        c = rtde_c
+        if c is None:
             return
-        rtde_c.stopScript()
-        print("[RTDE] stopScript sent")
+        c.stopScript()
+        logger.info("[RTDE] stopScript sent")
     except Exception as e:
-        print(f"[RTDE] stopScript error: {e}")
+        logger.error(f"[RTDE] stopScript error: {e}")
 
 
 def loop_pull(pp):
@@ -188,7 +203,7 @@ def loop_pull(pp):
         try:
             res = pp.PullMessages({'Timeout': PULL_TIMEOUT, 'MessageLimit': PULL_MESSAGE_LIMIT})
         except KeyboardInterrupt:
-            print("[STOP]")
+            logger.info("[STOP]")
             return
         for notif in getattr(res, 'NotificationMessage', []) or []:
             msg = getattr(notif, 'Message', None)
@@ -200,7 +215,7 @@ def loop_pull(pp):
                 val = (si.get('Value') or '').strip().lower()
                 v_true = val in ('true', '1', 'yes', 'on')
                 if v_true and not last_people:
-                    print('[PEOPLE] True')
+                    logger.info('[PEOPLE] True')
 
                     running = is_program_running()
                     if running:
@@ -229,7 +244,7 @@ def main():
 
     pp = cam.create_pullpoint_service()
     addr = getattr(pp.ws_client, '_binding_options', {}).get('address', pullpoint_url)
-    print(f"[READY] PullPoint: {addr}")
+    logger.info(f"[READY] PullPoint: {addr}")
 
     loop_pull(pp)
 
@@ -239,8 +254,9 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         try:
-            if rtde_c is not None:
-                rtde_c.disconnect()
+            c = rtde_c
+            if c is not None:
+                c.disconnect()
         except Exception:
             pass
-        print("[STOP]")
+        logger.info("[STOP]")
