@@ -27,15 +27,16 @@ SCAN_PORTS = range(int(os.getenv('SCAN_PORTS_START')), int(os.getenv('SCAN_PORTS
 
 UR_HOST = os.getenv('UR_HOST')
 
-rtde_c = RTDEControl(UR_HOST)
-
+rtde_c = None
 _rtde_last_attempt_ts = 0.0
 _rtde_backoff_s = 30.0
+_rtde_attempts = 0
 
 
 def _graceful_exit(signum, frame):
     try:
-        rtde_c.disconnect()
+        if rtde_c is not None:
+            rtde_c.disconnect()
     except Exception:
         pass
     print("[STOP]")
@@ -54,6 +55,21 @@ def make_cam():
         CAM_HOST, CAM_PORT, CAM_USER, CAM_PASS,
         transport=transport, adjust_time=True, encrypt=True
     )
+
+
+def connect_camera_with_backoff():
+    attempt = 1
+    while True:
+        try:
+            print(f"[CAM] Connecting to {CAM_HOST}:{CAM_PORT} (attempt #{attempt})...")
+            cam = make_cam()
+            print("[CAM] Connected.")
+            return cam
+        except Exception as e:
+            print(f"[CAM] Connection error: {e}")
+            print("[CAM] Retrying in 30s...")
+            attempt += 1
+            time.sleep(30.0)
 
 
 def try_create_subscription(events):
@@ -98,31 +114,50 @@ def try_probe_existing_pullpoint(cam):
 
 
 def ensure_rtde_connected():
-    global rtde_c, _rtde_last_attempt_ts
+    global rtde_c, _rtde_last_attempt_ts, _rtde_backoff_s, _rtde_attempts
     now = time.time()
     if now - _rtde_last_attempt_ts < _rtde_backoff_s:
         return
     _rtde_last_attempt_ts = now
 
     try:
-        if rtde_c.isConnected() or rtde_c.reconnect():
+        if rtde_c is None:
+            _rtde_attempts += 1
+            print(f"[RTDE] Connecting to {UR_HOST} (attempt #{_rtde_attempts})...")
+            rtde_c = RTDEControl(UR_HOST)
+            print("[RTDE] Connected.")
+            _rtde_attempts = 0
             return
-    except Exception:
-        pass
 
-    try:
+        if rtde_c.isConnected():
+            _rtde_attempts = 0
+            return
+
+        _rtde_attempts += 1
+        print(f"[RTDE] Retrying connection (attempt #{_rtde_attempts})...")
+        if rtde_c.reconnect():
+            print("[RTDE] Reconnected.")
+            _rtde_attempts = 0
+            return
+
         try:
             rtde_c.disconnect()
         except Exception:
             pass
+        print(f"[RTDE] Creating new session with {UR_HOST} (attempt #{_rtde_attempts})...")
         rtde_c = RTDEControl(UR_HOST)
-    except Exception:
-        pass
+        print("[RTDE] Connected.")
+        _rtde_attempts = 0
+    except Exception as e:
+        print(f"[RTDE] Connection error: {e}")
+        print("[RTDE] Will retry in 30s...")
 
 
 def is_program_running():
     try:
         ensure_rtde_connected()
+        if rtde_c is None:
+            return None
         status = rtde_c.getRobotStatus()
         return bool(status & 0x2)
         # return ((status >> 1) & 1) == 1
@@ -134,6 +169,8 @@ def is_program_running():
 def stop_robot():
     try:
         ensure_rtde_connected()
+        if rtde_c is None:
+            return
         rtde_c.stopScript()
         print("[RTDE] stopScript sent")
     except Exception as e:
@@ -175,7 +212,7 @@ def loop_pull(pp):
 
 
 def main():
-    cam = make_cam()
+    cam = connect_camera_with_backoff()
     events = cam.create_events_service()
 
     pullpoint_url = cam.xaddrs.get(PP_NS_KEY)
@@ -202,7 +239,8 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         try:
-            rtde_c.disconnect()
+            if rtde_c is not None:
+                rtde_c.disconnect()
         except Exception:
             pass
         print("[STOP]")
