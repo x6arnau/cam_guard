@@ -212,8 +212,7 @@ def loop_pull(pp):
                 continue
 
             for si in message_el.xpath('.//*[local-name()="SimpleItem"][@Name="IsPeople"]'):
-                val = (si.get('Value') or '').strip().lower()
-                v_true = val in ('true', '1', 'yes', 'on')
+                v_true = si.get('Value') == 'true'
                 if v_true and not last_people:
                     logger.info('[PEOPLE] True')
 
