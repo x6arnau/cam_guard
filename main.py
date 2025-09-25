@@ -7,6 +7,7 @@ from typing import Optional
 
 import logging
 from dotenv import load_dotenv
+from lxml import etree
 from onvif import ONVIFCamera
 from requests import Session
 from requests.auth import HTTPDigestAuth
@@ -29,6 +30,12 @@ CAM_USER = os.getenv('CAM_USER')
 CAM_PASS = os.getenv('CAM_PASS')
 
 PP_NS_KEY = 'http://www.onvif.org/ver10/events/wsdl/PullPointSubscription'
+
+NS = {'tt': 'http://www.onvif.org/ver10/schema'}
+X_ISPEOPLE_VAL = etree.XPath(
+    'string(tt:Data/tt:SimpleItem[@Name="IsPeople"]/@Value)',
+    namespaces=NS
+)
 
 PULL_TIMEOUT = os.getenv('PULL_TIMEOUT')
 PULL_MESSAGE_LIMIT = int(os.getenv('PULL_MESSAGE_LIMIT'))
@@ -211,16 +218,14 @@ def loop_pull(pp):
             if message_el is None:
                 continue
 
-            for si in message_el.xpath('.//*[local-name()="SimpleItem"][@Name="IsPeople"]'):
-                v_true = si.get('Value') == 'true'
-                if v_true and not last_people:
-                    logger.info('[PEOPLE] True')
-
-                    running = is_program_running()
-                    if running:
-                        stop_robot()
-
-                last_people = v_true
+            val = X_ISPEOPLE_VAL(message_el)
+            v_true = (val == 'true')
+            if v_true and not last_people:
+                logger.info('[PEOPLE] True')
+                running = is_program_running()
+                if running:
+                    stop_robot()
+            last_people = v_true
 
         time.sleep(SLEEP_SEC)
 
