@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
-import signal
 import sys
 import time
-from typing import Optional
 
 import logging
 from dotenv import load_dotenv
@@ -11,7 +9,6 @@ from lxml import etree
 from onvif import ONVIFCamera
 from requests import Session
 from requests.auth import HTTPDigestAuth
-from rtde_control import RTDEControlInterface as RTDEControl
 from zeep.transports import Transport
 
 load_dotenv()
@@ -43,26 +40,6 @@ SLEEP_SEC = float(os.getenv('SLEEP_SEC'))
 SCAN_PORTS = range(int(os.getenv('SCAN_PORTS_START')), int(os.getenv('SCAN_PORTS_END')))
 
 UR_HOST = os.getenv('UR_HOST')
-
-rtde_c: Optional[RTDEControl] = None
-_rtde_last_attempt_ts = 0.0
-_rtde_backoff_s = 30.0
-_rtde_attempts = 0
-
-
-def _graceful_exit(signum, frame):
-    try:
-        c = rtde_c
-        if c is not None:
-            c.disconnect()
-    except Exception:
-        pass
-    logger.info("[STOP]")
-    sys.exit(0)
-
-
-signal.signal(signal.SIGINT, _graceful_exit)
-signal.signal(signal.SIGTERM, _graceful_exit)
 
 
 def make_cam():
@@ -131,74 +108,6 @@ def try_probe_existing_pullpoint(cam):
     return None
 
 
-def ensure_rtde_connected():
-    global rtde_c, _rtde_last_attempt_ts, _rtde_backoff_s, _rtde_attempts
-    now = time.time()
-    if now - _rtde_last_attempt_ts < _rtde_backoff_s:
-        return
-    _rtde_last_attempt_ts = now
-
-    try:
-        if rtde_c is None:
-            _rtde_attempts += 1
-            logger.info(f"[RTDE] Connecting to {UR_HOST} (attempt #{_rtde_attempts})...")
-            rtde_c = RTDEControl(UR_HOST)
-            logger.info("[RTDE] Connected.")
-            _rtde_attempts = 0
-            return
-
-        c = rtde_c
-        if c is not None and c.isConnected():
-            _rtde_attempts = 0
-            return
-
-        _rtde_attempts += 1
-        logger.info(f"[RTDE] Retrying connection (attempt #{_rtde_attempts})...")
-        if c is not None and c.reconnect():
-            logger.info("[RTDE] Reconnected.")
-            _rtde_attempts = 0
-            return
-
-        try:
-            if c is not None:
-                c.disconnect()
-        except Exception:
-            pass
-        logger.info(f"[RTDE] Creating new session with {UR_HOST} (attempt #{_rtde_attempts})...")
-        rtde_c = RTDEControl(UR_HOST)
-        logger.info("[RTDE] Connected.")
-        _rtde_attempts = 0
-    except Exception as e:
-        logger.error(f"[RTDE] Connection error: {e}")
-        logger.info("[RTDE] Will retry in 30s...")
-
-
-def is_program_running():
-    try:
-        ensure_rtde_connected()
-        c = rtde_c
-        if c is None:
-            return None
-        status = c.getRobotStatus()
-        return bool(status & 0x2)
-        # return ((status >> 1) & 1) == 1
-    except Exception as e:
-        logger.error(f"[RTDE] getRobotStatus error: {e}")
-        return None
-
-
-def stop_robot():
-    try:
-        ensure_rtde_connected()
-        c = rtde_c
-        if c is None:
-            return
-        c.stopScript()
-        logger.info("[RTDE] stopScript sent")
-    except Exception as e:
-        logger.error(f"[RTDE] stopScript error: {e}")
-
-
 def loop_pull(pp):
     try:
         pp.SetSynchronizationPoint()
@@ -222,9 +131,6 @@ def loop_pull(pp):
             v_true = (val == 'true')
             if v_true and not last_people:
                 logger.info('[PEOPLE] True')
-                running = is_program_running()
-                if running:
-                    stop_robot()
             last_people = v_true
 
         time.sleep(SLEEP_SEC)
@@ -257,10 +163,8 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        try:
-            c = rtde_c
-            if c is not None:
-                c.disconnect()
-        except Exception:
-            pass
         logger.info("[STOP]")
+        pass
+    except Exception as e:
+        logger.error(f"[FATAL] {e}")
+        sys.exit(1)
