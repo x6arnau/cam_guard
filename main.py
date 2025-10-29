@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
+import json
 import os
+import socket
 import sys
 import time
 
@@ -26,6 +28,9 @@ CAM_PORT = int(os.getenv('CAM_PORT'))
 CAM_USER = os.getenv('CAM_USER')
 CAM_PASS = os.getenv('CAM_PASS')
 
+ROBOT_IP = os.getenv('ROBOT_IP')
+ROBOT_PORT = int(os.getenv('ROBOT_PORT'))
+
 PP_NS_KEY = 'http://www.onvif.org/ver10/events/wsdl/PullPointSubscription'
 
 NS = {'tt': 'http://www.onvif.org/ver10/schema'}
@@ -38,8 +43,6 @@ PULL_TIMEOUT = os.getenv('PULL_TIMEOUT')
 PULL_MESSAGE_LIMIT = int(os.getenv('PULL_MESSAGE_LIMIT'))
 SLEEP_SEC = float(os.getenv('SLEEP_SEC'))
 SCAN_PORTS = range(int(os.getenv('SCAN_PORTS_START')), int(os.getenv('SCAN_PORTS_END')))
-
-UR_HOST = os.getenv('UR_HOST')
 
 
 def make_cam():
@@ -131,6 +134,13 @@ def loop_pull(pp):
             v_true = (val == 'true')
             if v_true and not last_people:
                 logger.info('[PEOPLE] True')
+
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((ROBOT_IP, ROBOT_PORT))
+                msg = {"person": 1, "ts": int(time.time() * 1000)}
+                sock.sendall((json.dumps(msg) + "\n").encode())
+                time.sleep(0.2)
+
             last_people = v_true
 
         time.sleep(SLEEP_SEC)
